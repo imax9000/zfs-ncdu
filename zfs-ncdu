@@ -1,0 +1,60 @@
+#!/bin/sh
+
+zfs list -Hp -o name,usedbydataset,usedbyrefreservation,usedbysnapshots,usedbychildren,lrefer | jq --raw-input --slurp '
+def local_entries:
+	[] +
+	if .usedbydataset > 0 then
+		[{
+			name: "files",
+			dsize: .usedbydataset,
+			asize: .lrefer,
+		}]
+	else [] end +
+	if .usedbyrefreservation > 0 then
+		[{
+			name: "refreservation",
+			dsize: .usedbyrefreservation,
+		}]
+	else [] end +
+	if .usedbysnapshots > 0 then
+		[{
+			name: "snapshots",
+			dsize: .usedbysnapshots,
+		}]
+	else [] end
+;
+
+def to_ncdu:
+	. as $all |
+	(
+		map(select(.name == []) | local_entries[])
+		+
+		(
+			map(select((.name | length) > 0))
+			| group_by(.name[0]) |
+			map(
+				[{name: .[0].name[0]}] + (map(.name = .name[1:]) | to_ncdu)
+			)
+		)
+	)
+;
+
+[
+	split("\n")[] | select(. != "") | split("\t") |
+	{
+		name: (.[0] | split("/")),
+		usedbydataset: (.[1] | tonumber),
+		usedbyrefreservation: (.[2] | tonumber),
+		usedbysnapshots: (.[3] | tonumber),
+		usedbychildren: (.[4] | tonumber),
+		lrefer: (.[5] | tonumber),
+	}
+] as $lines |
+[
+	1,1,
+	{progname: "zfs-list-to-ncdu"},
+	[
+		{name: "zfs:/"}
+	] + ($lines | to_ncdu)
+]
+' | ncdu -f - "$@"
